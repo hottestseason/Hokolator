@@ -1,0 +1,23 @@
+apply plugin: 'java'
+apply plugin: 'eclipse'
+
+def jdkVersion = 1.8
+sourceCompatibility = jdkVersion
+targetCompatibility = jdkVersion
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testCompile 'junit:junit:4.11'
+}
+
+eclipse {
+    project {
+        natures 'org.springsource.ide.eclipse.gradle.core.nature'
+    }
+    classpath {
+        containers 'org.springsource.ide.eclipse.gradle.classpathcontainer'
+    }
+}
