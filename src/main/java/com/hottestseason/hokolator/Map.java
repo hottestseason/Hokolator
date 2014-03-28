@@ -3,9 +3,12 @@ package com.hottestseason.hokolator;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.stream.Collectors;
 
 import com.hottestseason.geom.Point2D;
@@ -77,6 +80,16 @@ public class Map implements GeometricGraph<Intersection, Street> {
             return graph.getEdgesOf(this);
         }
 
+        public Set<Intersection> getNeighborIntersections() {
+            return getStreets().stream().map(street -> street.getTarget()).collect(Collectors.toSet());
+        }
+
+        public Set<Street> getNeighborStreets() {
+            Set<Street> streets = new HashSet<>(getStreets());
+            streets.addAll(getNeighborIntersections().stream().flatMap(intersection -> intersection.getStreets().stream()).filter(street -> street.getTarget() == this).collect(Collectors.toSet()));
+            return streets;
+        }
+
         public List<Street> findShortestPathTo(Intersection end) {
             return findShortestPathBetween(this, end);
         }
@@ -116,6 +129,21 @@ public class Map implements GeometricGraph<Intersection, Street> {
 
         public double getLength() {
             return getSource().getDistanceFrom(getTarget());
+        }
+
+        public Set<Street> getNeighborStreets() {
+            Set<Street> streets = new HashSet<>();
+            streets.addAll(getSource().getNeighborStreets());
+            streets.addAll(getTarget().getNeighborStreets());
+            streets.remove(this);
+            return streets;
+        }
+
+        public Set<Pedestrian> getNeighborPedestrians() {
+
+            Set<Pedestrian> pedestrians = getNeighborStreets().stream().flatMap(street -> new CopyOnWriteArraySet<>(street.pedestrians).stream()).collect(Collectors.toSet());
+            pedestrians.addAll(new CopyOnWriteArraySet<>(pedestrians));
+            return pedestrians.stream().filter(pedestrian -> !pedestrian.isAtGoal()).collect(Collectors.toSet());
         }
 
         public Optional<Intersection> getIntersectionWith(Street street) {
