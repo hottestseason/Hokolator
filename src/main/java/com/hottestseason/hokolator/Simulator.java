@@ -9,7 +9,7 @@ public class Simulator {
     public final Set<Pedestrian> pedestrians;
     public double timeLimit = Double.MAX_VALUE;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         int numOfPedestrians = Integer.parseInt(args[2]);
 
         Map map = new Map();
@@ -44,11 +44,12 @@ public class Simulator {
         this.pedestrians = pedestrians;
     }
 
-    public void run() {
+    public void run() throws InterruptedException {
         double time = 0;
         while (time <= timeLimit) {
             time += 1.0;
-            pedestrians.stream().parallel().forEach(pedestrian -> pedestrian.update(1.0));
+            AgentsScheduler.update(map.getStreets(), 1.0);
+            AgentsScheduler.update(pedestrians, 1.0);
             int numOfFinishedPedestrians = 0;
             for (Pedestrian pedestrian : pedestrians) {
                 if (pedestrian.isAtGoal()) numOfFinishedPedestrians++;

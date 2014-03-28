@@ -1,16 +1,20 @@
 package com.hottestseason.hokolator;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Random;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-public class Pedestrian {
+public class Pedestrian implements Agent {
     public final int id;
     public final Map.Intersection goal;
     public double time = 0;
     private double speed;
     private Place place;
     private Place nextPlace;
+    private double linkLeftTime;
 
     public Pedestrian(int id, Map.Intersection goal) {
         this.id = id;
@@ -27,6 +31,29 @@ public class Pedestrian {
     @Override
     public String toString() {
         return String.valueOf(id);
+    }
+
+    @Override
+    public void update(double time) throws InterruptedException {
+        if (!isAtGoal()) {
+            speed = calcSpeed();
+            nextPlace = calcNextPlace(time);
+            if (place.street != nextPlace.street) {
+                linkLeftTime = calcLinkLeftTime();
+                Set<Pedestrian> neighborPedestrians = new HashSet<>(place.street.neighborPedestrians);
+                neighborPedestrians.addAll(nextPlace.street.neighborPedestrians);
+                AgentsScheduler.finished("nextPlaceCalculated", this);
+                AgentsScheduler.barrier("nextPlaceCalculated", this, neighborPedestrians);
+                Set<Pedestrian> conflictingPedestrians = neighborPedestrians.stream().filter(pedestrian -> pedestrian.willEnterOrExit(place.street) || pedestrian.willEnterOrExit(nextPlace.street)).collect(Collectors.toSet());
+                AgentsScheduler.ordered("conflictingPedestrians", this, conflictingPedestrians, (agent1, agent2) -> ((Pedestrian) agent1).compareUsingLinkLeftTime((Pedestrian) agent2), () -> moveTo(nextPlace));
+            } else {
+                AgentsScheduler.finished("nextPlaceCalculated", this);
+                moveTo(nextPlace);
+           }
+           this.time += time;
+        } else {
+            AgentsScheduler.finished("nextPlaceCalculated", this);
+        }
     }
 
     public Place getPlace() {
@@ -88,12 +115,17 @@ public class Pedestrian {
         return place.street.getTarget() == goal && place.position == place.street.getLength();
     }
 
-    public void update(double time) {
-        if (!isAtGoal()) {
-            speed = calcSpeed();
-            nextPlace = calcNextPlace(time);
-            moveTo(nextPlace);
-            this.time += time;
-        }
+    public boolean willEnterOrExit(Map.Street street) {
+        return (place.street != nextPlace.street) && (place.street == street || nextPlace.street == street);
+    }
+
+    private double calcLinkLeftTime() {
+        return (place.street.getLength() - place.position) / speed;
+    }
+
+    private int compareUsingLinkLeftTime(Pedestrian pedestrian) {
+        int result = Double.compare(linkLeftTime, pedestrian.linkLeftTime);
+        if (result == 0) result = Integer.compare(id, pedestrian.id);
+        return result;
     }
 }

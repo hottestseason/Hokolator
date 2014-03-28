@@ -3,8 +3,11 @@ package com.hottestseason.hokolator;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -77,13 +80,25 @@ public class Map implements GeometricGraph<Intersection, Street> {
             return graph.getEdgesOf(this);
         }
 
+        public Set<Intersection> getNeighborIntersections() {
+            return getStreets().stream().map(street -> street.getTarget()).collect(Collectors.toSet());
+        }
+
+        public Set<Street> getNeighborStreets() {
+            Set<Street> streets = new HashSet<>(getStreets());
+            streets.addAll(getNeighborIntersections().stream().flatMap(intersection -> intersection.getStreets().stream()).filter(street -> street.getTarget() == this).collect(Collectors.toSet()));
+            return streets;
+        }
+
         public List<Street> findShortestPathTo(Intersection end) {
             return findShortestPathBetween(this, end);
         }
     }
 
-    public class Street implements Comparable<Street>, Weighted {
+    public class Street implements Comparable<Street>, Weighted, Agent {
         public int width;
+        private final Set<Pedestrian> mutableNeighborPedestrians = new HashSet<>();
+        public final Set<Pedestrian> neighborPedestrians = Collections.unmodifiableSet(mutableNeighborPedestrians);
         private final UUID uuid = UUID.randomUUID();
         private final List<Pedestrian> pedestrians = new ArrayList<>();
 
@@ -106,6 +121,12 @@ public class Map implements GeometricGraph<Intersection, Street> {
             return getLength();
         }
 
+        @Override
+        public void update(double time) throws InterruptedException {
+            mutableNeighborPedestrians.clear();
+            mutableNeighborPedestrians.addAll(calcNeighborPedestrians());
+        }
+
         public Intersection getSource() {
             return graph.getSourceOf(this);
         }
@@ -118,13 +139,20 @@ public class Map implements GeometricGraph<Intersection, Street> {
             return getSource().getDistanceFrom(getTarget());
         }
 
+        public Set<Street> getNeighborStreets() {
+            Set<Street> streets = new HashSet<>();
+            streets.addAll(getSource().getNeighborStreets());
+            streets.addAll(getTarget().getNeighborStreets());
+            return streets;
+        }
+
         public Optional<Intersection> getIntersectionWith(Street street) {
             return graph.getConnectionBetween(this, street);
         }
 
         public boolean canEnter() {
             synchronized (pedestrians) {
-                return pedestrians.stream().filter(pedestrian -> !pedestrian.isAtGoal()).collect(Collectors.toList()).size() < width;
+                return getUngoaledPedestrians().size() < width;
             }
         }
 
@@ -151,6 +179,14 @@ public class Map implements GeometricGraph<Intersection, Street> {
                     }
                 }
             }
+        }
+
+        private Set<Pedestrian> calcNeighborPedestrians() {
+            return getNeighborStreets().stream().flatMap(street -> street.pedestrians.stream().filter(pedestrian -> !pedestrian.isAtGoal())).collect(Collectors.toSet());
+        }
+
+        private Set<Pedestrian> getUngoaledPedestrians() {
+            return pedestrians.stream().filter(pedestrian -> !pedestrian.isAtGoal()).collect(Collectors.toSet());
         }
     }
 }
