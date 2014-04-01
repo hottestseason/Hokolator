@@ -2,8 +2,10 @@ package com.hottestseason.hokolator;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-public class Pedestrian {
+public class Pedestrian implements Agent {
     public final int id;
     public final Map.Intersection goal;
     public double time = 0;
@@ -26,6 +28,27 @@ public class Pedestrian {
     @Override
     public String toString() {
         return String.valueOf(id);
+    }
+
+    @Override
+    public void update(double time) throws InterruptedException {
+        if (!isAtGoal()) {
+            speed = calcSpeed();
+            nextPlace = calcNextPlace(time);
+            Set<Pedestrian> neighborPedestrians = nextPlace.street.getNeighborPedestrians();
+            if (place.street != nextPlace.street) {
+                AgentsScheduler.finished("nextSpeedCalculated", this);
+                AgentsScheduler.waitOthers("nextSpeedCalculated", this, neighborPedestrians);
+                Set<Pedestrian> conflictingPedestrians = neighborPedestrians.stream().filter(pedestrian -> pedestrian.nextPlace.street == nextPlace.street || pedestrian.place.street == nextPlace.street && pedestrian.nextPlace.street != pedestrian.place.street).collect(Collectors.toSet());
+                AgentsScheduler.orderIf("nextSpeedCalculated", this, conflictingPedestrians, (agent1, agent2) -> Double.compare(((Pedestrian) agent1).calcLinkLeftTime(), ((Pedestrian) agent2).calcLinkLeftTime()), () -> moveTo(nextPlace));
+            } else {
+                AgentsScheduler.finished("nextSpeedCalculated", this);
+                moveTo(nextPlace);
+           }
+           this.time += time;
+        } else {
+            AgentsScheduler.finished("nextSpeedCalculated", this);
+        }
     }
 
     public Place getPlace() {
@@ -87,12 +110,11 @@ public class Pedestrian {
         return place.street.getTarget() == goal && place.position == place.street.getLength();
     }
 
-    public void update(double time) {
-        if (!isAtGoal()) {
-            speed = calcSpeed();
-            nextPlace = calcNextPlace(time);
-            moveTo(nextPlace);
-            this.time += time;
+    private double calcLinkLeftTime() {
+        if (speed == 0) {
+            return Double.MAX_VALUE;
+        } else {
+            return (place.street.getLength() - place.position) / speed;
         }
     }
 }
