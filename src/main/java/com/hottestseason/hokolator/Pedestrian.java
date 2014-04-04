@@ -43,9 +43,10 @@ public class Pedestrian implements Agent {
                 Set<Pedestrian> neighborPedestrians = new HashSet<>(place.street.neighborPedestrians);
                 neighborPedestrians.addAll(nextPlace.street.neighborPedestrians);
                 AgentsScheduler.finished("nextPlaceCalculated", this);
-                AgentsScheduler.barrier("nextPlaceCalculated", this, neighborPedestrians);
-                Set<Pedestrian> conflictingPedestrians = neighborPedestrians.stream().filter(pedestrian -> pedestrian.willEnterOrExit(place.street) || pedestrian.willEnterOrExit(nextPlace.street)).collect(Collectors.toSet());
-                AgentsScheduler.ordered("conflictingPedestrians", this, conflictingPedestrians, (agent1, agent2) -> ((Pedestrian) agent1).compareUsingLinkLeftTime((Pedestrian) agent2), () -> moveTo(nextPlace));
+                AgentsScheduler.barrier("nextPlaceCalculated", this, neighborPedestrians, () -> {
+                    Set<Pedestrian> conflictingPedestrians = neighborPedestrians.stream().filter(pedestrian -> pedestrian.willEnterOrExit(place.street) || pedestrian.willEnterOrExit(nextPlace.street)).collect(Collectors.toSet());
+                    AgentsScheduler.ordered("conflictingPedestrians", this, conflictingPedestrians, (agent1, agent2) -> ((Pedestrian) agent1).compareUsingLinkLeftTime((Pedestrian) agent2), () -> moveTo(nextPlace));
+                });
             } else {
                 AgentsScheduler.finished("nextPlaceCalculated", this);
                 moveTo(nextPlace);

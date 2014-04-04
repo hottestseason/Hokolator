@@ -1,40 +1,47 @@
 package com.hottestseason.hokolator;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentSkipListSet;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class AgentsScheduler {
+    private static final int numOfCores = 8;
+    private static final int awaitTime = 60 * 60;
     private static final AgentsScheduler instance = new AgentsScheduler();
+    private static final Queue<Runnable> newlyCreatedJobs = new ConcurrentLinkedQueue<>();
 
     private final Map<String, BarrierScheduler> barrierSchedulerMap = new HashMap<>();
     private final Map<String, OrderedScheduler> orderedSchedulerMap = new HashMap<>();
 
     public static void update(Collection<? extends Agent> agents, double time) throws InterruptedException {
         AgentsScheduler.clear();
-        List<Thread> threads = new ArrayList<>();
+        ExecutorService executor = Executors.newFixedThreadPool(numOfCores);
         for (Agent agent : agents) {
-            Thread thread = new Thread(() -> {
+            executor.execute(() -> {
                 try {
                     agent.update(time);
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }
             });
-            threads.add(thread);
         }
-        for (Thread thread : threads) thread.start();
-        for (Thread thread : threads) thread.join();
+        executor.shutdown();
+        if (!executor.awaitTermination(awaitTime, TimeUnit.SECONDS)) throw new RuntimeException("Cannot finished in " + awaitTime);
+        while (!newlyCreatedJobs.isEmpty()) {
+            processNewlyCreatedJobs();
+        }
         System.gc();
     }
 
@@ -47,12 +54,22 @@ public class AgentsScheduler {
         instance.getOrRegisterWaitersScheduler(tag).finished(agent);
     }
 
-    public static void barrier(String tag, Agent waiter, Set<? extends Agent> others) throws InterruptedException {
-        instance.getOrRegisterWaitersScheduler(tag).barrier(waiter, others);
+    public static void barrier(String tag, Agent waiter, Set<? extends Agent> others, Runnable block) {
+        instance.getOrRegisterWaitersScheduler(tag).barrier(waiter, others, block);
     }
 
-    public static void ordered(String tag, Agent agent, Set<? extends Agent> agents, Comparator<Agent> comparator, Runnable runnable) throws InterruptedException {
+    public static void ordered(String tag, Agent agent, Set<? extends Agent> agents, Comparator<Agent> comparator, Runnable runnable) {
         instance.getOrRegisterSequentialScheduler(tag).ordered(agent, agents, comparator, runnable);
+    }
+
+    private static void processNewlyCreatedJobs() throws InterruptedException {
+        ExecutorService executor = Executors.newFixedThreadPool(numOfCores);
+        while (!newlyCreatedJobs.isEmpty()) {
+            Runnable job = newlyCreatedJobs.poll();
+            executor.execute(job);
+        }
+        executor.shutdown();
+        if (!executor.awaitTermination(awaitTime, TimeUnit.SECONDS)) throw new RuntimeException("Cannot finished in " + awaitTime);
     }
 
     private BarrierScheduler getOrRegisterWaitersScheduler(String tag) {
@@ -74,37 +91,41 @@ public class AgentsScheduler {
     }
 
     class BarrierScheduler {
-        private final Map<Agent, CountDownLatch> countDownLatches = new ConcurrentHashMap<>();
         private final Map<Agent, Boolean> finishedFlags = new HashMap<>();
         private final Map<Agent, Set<Agent>> waitersMap = new HashMap<>();
+        private final Map<Agent, Set<? extends Agent>> waitingsMap = new HashMap<>();
+        private final Map<Agent, Runnable> blockMap = new HashMap<>();
 
         private synchronized void finished(Agent agent) {
             finishedFlags.put(agent, true);
             if (waitersMap.containsKey(agent)) {
                 for (Agent waiter : waitersMap.get(agent)) {
-                    countDownLatches.get(waiter).countDown();
+                    waitingsMap.get(waiter).remove(agent);
+                    if (waitingsMap.get(waiter).isEmpty()) {
+                        newlyCreatedJobs.add(blockMap.get(waiter));
+                    }
                 }
             }
         }
 
-        private void barrier(Agent waiter, Set<? extends Agent> others) throws InterruptedException {
-            if (others.size() == 1 && others.contains(waiter)) return;
-            int latchSize = others.size();
-            synchronized (this) {
-                for (Agent other : others) {
-                    if (finishedFlags.containsKey(other) && finishedFlags.get(other)) {
-                        latchSize--;
-                    } else {
-                        if (!waitersMap.containsKey(other)) {
-                            waitersMap.put(other, new HashSet<>());
-                        }
-                        waitersMap.get(other).add(waiter);
+        private synchronized void barrier(Agent waiter, Set<? extends Agent> others, Runnable block) {
+            Set<? extends Agent> waitings = new HashSet<>(others);
+            for (Agent other : others) {
+                if (finishedFlags.containsKey(other)) {
+                    waitings.remove(other);
+                } else {
+                    if (!waitersMap.containsKey(other)) {
+                        waitersMap.put(other, new HashSet<>());
                     }
+                    waitersMap.get(other).add(waiter);
                 }
-                if (latchSize == 0) return;
-                countDownLatches.put(waiter, new CountDownLatch(latchSize));
             }
-            countDownLatches.get(waiter).await();
+            if (waitings.isEmpty()) {
+                newlyCreatedJobs.add(block);
+            } else {
+                waitingsMap.put(waiter, waitings);
+                blockMap.put(waiter, block);
+            }
         }
     }
 
@@ -117,7 +138,7 @@ public class AgentsScheduler {
             this.tag = tag;
         }
 
-        private void ordered(Agent agent, Set<? extends Agent> agents, Comparator<Agent> comparator, Runnable runnable) throws InterruptedException {
+        private void ordered(Agent agent, Set<? extends Agent> agents, Comparator<Agent> comparator, Runnable runnable) {
             if (agents.size() == 1 && agents.contains(agent)) {
                 runnable.run();
                 return;
@@ -129,25 +150,30 @@ public class AgentsScheduler {
             barrierMap.put(agent, sorted);
 
             AgentsScheduler.finished(tag, agent);
-            recursiveBarrier(agent);
-
-            if (sorted.first() == agent) {
-                for (Agent _agent : sorted) {
-                    runnableMap.get(_agent).run();
+            recursiveBarrier(agent, () -> {
+                if (sorted.first() == agent) {
+                    for (Agent _agent : sorted) {
+                        runnableMap.get(_agent).run();
+                    }
                 }
-            }
+            });
         }
 
-        private void recursiveBarrier(Agent agent) throws InterruptedException {
+        private void recursiveBarrier(Agent agent, Runnable runnable) {
             Set<Agent> agents = barrierMap.get(agent);
-            AgentsScheduler.barrier(tag, agent, agents);
-            int beforeSize, afterSize;
-            synchronized (agents) {
-                beforeSize = agents.size();
-                agents.addAll(agents.stream().flatMap(waiting -> barrierMap.get(waiting).stream()).collect(Collectors.toSet()));
-                afterSize = agents.size();
-            }
-            if (beforeSize != afterSize) recursiveBarrier(agent);
+            AgentsScheduler.barrier(tag, agent, agents, () -> {
+                int beforeSize, afterSize;
+                synchronized (agents) {
+                    beforeSize = agents.size();
+                    agents.addAll(agents.stream().flatMap(waiting -> barrierMap.get(waiting).stream()).collect(Collectors.toSet()));
+                    afterSize = agents.size();
+                }
+                if (beforeSize == afterSize) {
+                    runnable.run();
+                } else {
+                    recursiveBarrier(agent, runnable);
+                }
+            });
         }
     }
 }
