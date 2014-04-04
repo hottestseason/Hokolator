@@ -1,35 +1,42 @@
 package com.hottestseason.hokolator;
 
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
+import java.util.LinkedList;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.Queue;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class AgentsScheduler {
+    private static final int numOfCores = 8;
     private static final AgentsScheduler instance = new AgentsScheduler();
+    private static final Queue<Runnable> newlyCreatedJobs = new LinkedList<>();
 
     private final Map<String, WaitersScheduler> waitersSchedulerMap = new HashMap<>();
     private final Map<String, SequentialScheduler> sequentialSchedulerMap = new HashMap<>();
 
     public static void update(Set<? extends Agent> agents, double time) throws InterruptedException {
-        List<Thread> threads = new ArrayList<>();
+        ExecutorService executor = Executors.newFixedThreadPool(numOfCores);
+        AgentsScheduler.clear();
         for (Agent agent : agents) {
-            Thread thread = new Thread(() -> {
+            executor.execute(() -> {
                 try {
                     agent.update(time);
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }
             });
-            threads.add(thread);
         }
-        for (Thread thread : threads) thread.start();
-        for (Thread thread : threads) thread.join();
+        executor.shutdown();
+        executor.awaitTermination(60, TimeUnit.SECONDS);
+        while (!newlyCreatedJobs.isEmpty()) {
+            processNewlyCreatedJobs();
+        }
     }
 
     public static void clear() {
@@ -41,12 +48,22 @@ public class AgentsScheduler {
         instance.getOrRegisterWaitersScheduler(tag).finished(agent);
     }
 
-    public static void waitOthers(String tag, Agent waiter, Set<? extends Agent> others) throws InterruptedException {
-        instance.getOrRegisterWaitersScheduler(tag).waitOthers(waiter, others);
+    public static void waitOthers(String tag, Agent waiter, Set<? extends Agent> others, Runnable block) throws InterruptedException {
+        instance.getOrRegisterWaitersScheduler(tag).waitOthers(waiter, others, block);
     }
 
     public static void orderIf(String tag, Agent agent, Set<? extends Agent> agents, Comparator<Agent> comparator, Runnable runnable) {
         instance.getOrRegisterSequentialScheduler(tag).orderIf(agent, agents, comparator, runnable);
+    }
+
+    private static void processNewlyCreatedJobs() throws InterruptedException {
+        ExecutorService executor = Executors.newFixedThreadPool(numOfCores);
+        while (!newlyCreatedJobs.isEmpty()) {
+            Runnable job = newlyCreatedJobs.poll();
+            executor.execute(job);
+        }
+        executor.shutdown();
+        executor.awaitTermination(60, TimeUnit.SECONDS);
     }
 
     private WaitersScheduler getOrRegisterWaitersScheduler(String tag) {
@@ -68,25 +85,29 @@ public class AgentsScheduler {
     }
 
     class WaitersScheduler {
-        private final Map<Agent, CountDownLatch> countDownLatches = new HashMap<>();
         private final Map<Agent, Boolean> finishedFlags = new HashMap<>();
         private final Map<Agent, Set<Agent>> waitersMap = new HashMap<>();
+        private final Map<Agent, Set<? extends Agent>> waitingsMap = new HashMap<>();
+        private final Map<Agent, Runnable> blockMap = new HashMap<>();
 
         private synchronized void finished(Agent agent) {
             finishedFlags.put(agent, true);
             if (waitersMap.containsKey(agent)) {
                 for (Agent waiter : waitersMap.get(agent)) {
-                    countDownLatches.get(waiter).countDown();
+                    waitingsMap.get(waiter).remove(agent);
+                    if (waitingsMap.get(waiter).isEmpty()) {
+                        newlyCreatedJobs.add(blockMap.get(waiter));
+                    }
                 }
             }
         }
 
-        private void waitOthers(Agent waiter, Set<? extends Agent> others) throws InterruptedException {
+        private void waitOthers(Agent waiter, Set<? extends Agent> others, Runnable block) throws InterruptedException {
             synchronized (this) {
-                int latchSize = others.size();
+                Set<? extends Agent> waitings = new HashSet<>(others);
                 for (Agent other : others) {
                     if (finishedFlags.containsKey(other)) {
-                        latchSize--;
+                        waitings.remove(other);
                     } else {
                         if (!waitersMap.containsKey(other)) {
                             waitersMap.put(other, new HashSet<>());
@@ -94,9 +115,13 @@ public class AgentsScheduler {
                         waitersMap.get(other).add(waiter);
                     }
                 }
-                countDownLatches.put(waiter, new CountDownLatch(latchSize));
+                if (waitings.isEmpty()) {
+                    newlyCreatedJobs.add(block);
+                } else {
+                    waitingsMap.put(waiter, waitings);
+                    blockMap.put(waiter, block);
+                }
             }
-            countDownLatches.get(waiter).await();
         }
     }
 
