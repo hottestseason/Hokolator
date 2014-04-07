@@ -11,11 +11,13 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public class AgentsScheduler {
     private static final int numOfCores = 8;
     private static final AgentsScheduler instance = new AgentsScheduler();
-    private static final Queue<Runnable> newlyCreatedJobs = new LinkedList<>();
+    private static final Queue<Consumer<Context>> newlyCreatedJobs = new LinkedList<>();
+    private static final Map<Consumer<Context>, Context> contextMap = new HashMap<>();
 
     private final Map<String, WaitersScheduler> waitersSchedulerMap = new HashMap<>();
     private final Map<String, SequentialScheduler> sequentialSchedulerMap = new HashMap<>();
@@ -42,14 +44,15 @@ public class AgentsScheduler {
     public static void clear() {
         instance.waitersSchedulerMap.clear();
         instance.sequentialSchedulerMap.clear();
+        contextMap.clear();
     }
 
     public static void finished(String tag, Agent agent) {
         instance.getOrRegisterWaitersScheduler(tag).finished(agent);
     }
 
-    public static void waitOthers(String tag, Agent waiter, Set<? extends Agent> others, Runnable block) throws InterruptedException {
-        instance.getOrRegisterWaitersScheduler(tag).waitOthers(waiter, others, block);
+    public static void waitOthers(String tag, Agent waiter, Set<? extends Agent> others, Context context, Consumer<Context> block) throws InterruptedException {
+        instance.getOrRegisterWaitersScheduler(tag).waitOthers(waiter, others, context, block);
     }
 
     public static void orderIf(String tag, Agent agent, Set<? extends Agent> agents, Comparator<Agent> comparator, Runnable runnable) {
@@ -59,8 +62,8 @@ public class AgentsScheduler {
     private static void processNewlyCreatedJobs() throws InterruptedException {
         ExecutorService executor = Executors.newFixedThreadPool(numOfCores);
         while (!newlyCreatedJobs.isEmpty()) {
-            Runnable job = newlyCreatedJobs.poll();
-            executor.execute(job);
+            Consumer<Context> job = newlyCreatedJobs.poll();
+            executor.execute(() -> job.accept(contextMap.get(job)));
         }
         executor.shutdown();
         executor.awaitTermination(60, TimeUnit.SECONDS);
@@ -88,7 +91,7 @@ public class AgentsScheduler {
         private final Map<Agent, Boolean> finishedFlags = new HashMap<>();
         private final Map<Agent, Set<Agent>> waitersMap = new HashMap<>();
         private final Map<Agent, Set<? extends Agent>> waitingsMap = new HashMap<>();
-        private final Map<Agent, Runnable> blockMap = new HashMap<>();
+        private final Map<Agent, Consumer<Context>> blockMap = new HashMap<>();
 
         private synchronized void finished(Agent agent) {
             finishedFlags.put(agent, true);
@@ -102,8 +105,9 @@ public class AgentsScheduler {
             }
         }
 
-        private void waitOthers(Agent waiter, Set<? extends Agent> others, Runnable block) throws InterruptedException {
+        private void waitOthers(Agent waiter, Set<? extends Agent> others, Context context, Consumer<Context> block) throws InterruptedException {
             synchronized (this) {
+                contextMap.put(block, context);
                 Set<? extends Agent> waitings = new HashSet<>(others);
                 for (Agent other : others) {
                     if (finishedFlags.containsKey(other)) {

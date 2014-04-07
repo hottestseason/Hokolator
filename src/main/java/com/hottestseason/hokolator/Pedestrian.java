@@ -37,9 +37,11 @@ public class Pedestrian implements Agent {
             nextPlace = calcNextPlace(time);
             Set<Pedestrian> neighborPedestrians = nextPlace.street.getNeighborPedestrians();
             if (place.street != nextPlace.street) {
+                Context context = new Context();
+                context.set("neighborPedestrians", neighborPedestrians);
                 AgentsScheduler.finished("nextSpeedCalculated", this);
-                AgentsScheduler.waitOthers("nextSpeedCalculated", this, neighborPedestrians, () -> {
-                    Set<Pedestrian> conflictingPedestrians = neighborPedestrians.stream().filter(pedestrian -> pedestrian.nextPlace.street == nextPlace.street || pedestrian.place.street == nextPlace.street && pedestrian.nextPlace.street != pedestrian.place.street).collect(Collectors.toSet());
+                AgentsScheduler.waitOthers("nextSpeedCalculated", this, neighborPedestrians, context, (c) -> {
+                    Set<Pedestrian> conflictingPedestrians = ((Set<Pedestrian>) c.get("neighborPedestrians")).stream().filter(pedestrian -> pedestrian.nextPlace.street == nextPlace.street || pedestrian.place.street == nextPlace.street && pedestrian.nextPlace.street != pedestrian.place.street).collect(Collectors.toSet());
                     AgentsScheduler.orderIf("nextSpeedCalculated", this, conflictingPedestrians, (agent1, agent2) -> Double.compare(((Pedestrian) agent1).calcLinkLeftTime(), ((Pedestrian) agent2).calcLinkLeftTime()), () -> moveTo(nextPlace));
                 });
             } else {
